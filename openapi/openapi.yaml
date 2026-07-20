@@ -1,0 +1,290 @@
+openapi: "3.1.0"
+info:
+  title: Execution Service API
+  description: |
+    Execution Service for Tech Challenge FIAP Phase 4.
+    Provides health/readiness probes and Execution Service-owned task contracts.
+  version: "0.1.0"
+  contact:
+    name: Tech Challenge FIAP Phase 4 Team
+
+servers:
+  - url: http://localhost:3000
+    description: Local development
+
+tags:
+  - name: Health
+    description: Liveness and readiness probes
+  - name: Execution Tasks
+    description: Execution Service-owned task creation, lookup, and status contracts
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Liveness probe
+      description: Returns 200 when the process is alive.
+      tags: [Health]
+      responses:
+        "200":
+          description: Service is alive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /ready:
+    get:
+      operationId: getReady
+      summary: Readiness probe
+      description: Returns 200 when the service is ready to serve traffic and 503 when an enabled dependency is unavailable.
+      tags: [Health]
+      responses:
+        "200":
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+        "503":
+          description: Service is not ready yet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+
+  /execution-tasks:
+    post:
+      operationId: createExecutionTask
+      summary: Create an execution task
+      description: Creates an Execution Service-owned queued task. Retries with the same `Idempotency-Key` return the existing task.
+      tags: [Execution Tasks]
+      parameters:
+        - $ref: "#/components/parameters/CorrelationIdHeader"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateExecutionTaskRequest"
+      responses:
+        "201":
+          description: Execution task was created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutionTask"
+        "200":
+          description: Existing execution task returned for an idempotent retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutionTask"
+        "400":
+          description: Request validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /execution-tasks/{taskId}:
+    get:
+      operationId: getExecutionTask
+      summary: Read an execution task
+      tags: [Execution Tasks]
+      parameters:
+        - $ref: "#/components/parameters/TaskIdPath"
+      responses:
+        "200":
+          description: Execution task found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutionTask"
+        "404":
+          description: Execution task not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /execution-tasks/{taskId}/status:
+    patch:
+      operationId: updateExecutionTaskStatus
+      summary: Advance execution task status
+      description: Enforces Execution Service-owned status transition rules without RabbitMQ publication.
+      tags: [Execution Tasks]
+      parameters:
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateExecutionTaskStatusRequest"
+      responses:
+        "200":
+          description: Execution task status was updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutionTask"
+        "400":
+          description: Request validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Execution task not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Status transition is not allowed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  parameters:
+    CorrelationIdHeader:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+      description: Caller-provided correlation identifier for tracing across service boundaries.
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+      description: Caller-provided key used to safely retry task creation.
+    TaskIdPath:
+      name: taskId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+      description: Execution Service-generated task identifier.
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, service]
+      properties:
+        status:
+          type: string
+          enum: [ok, ready]
+        service:
+          type: string
+          example: execution-service
+    ReadinessResponse:
+      type: object
+      required: [status, service, dependencies]
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready]
+        service:
+          type: string
+          example: execution-service
+        dependencies:
+          type: array
+          items:
+            type: object
+            required: [name, status]
+            properties:
+              name:
+                type: string
+                example: mongodb
+              status:
+                type: string
+                enum: [ready, not_ready, skipped]
+              error:
+                type: string
+    CreateExecutionTaskRequest:
+      type: object
+      required: [workflowId, input]
+      additionalProperties: false
+      properties:
+        workflowId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          example: workflow-123
+        input:
+          description: JSON payload owned by the caller and stored by the Execution Service for execution processing.
+        correlationId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Optional body-level correlation identifier. `X-Correlation-Id` is preferred.
+    UpdateExecutionTaskStatusRequest:
+      type: object
+      required: [status]
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [running, completed, failed]
+        result:
+          description: Optional JSON result for completed tasks.
+        errorMessage:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          description: Optional failure detail for failed tasks.
+    ExecutionTaskStatus:
+      type: string
+      enum: [queued, running, completed, failed]
+    ExecutionTask:
+      type: object
+      required: [taskId, workflowId, status, input, createdAt, updatedAt]
+      properties:
+        taskId:
+          type: string
+          example: 3f80c3a2-82cf-4a61-b48f-6f4c8f4a4d3f
+        workflowId:
+          type: string
+          example: workflow-123
+        status:
+          $ref: "#/components/schemas/ExecutionTaskStatus"
+        input:
+          description: Original JSON input payload.
+        result:
+          description: Optional JSON task result.
+        errorMessage:
+          type: string
+        correlationId:
+          type: string
+        idempotencyKey:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [validation_error, not_found, invalid_status_transition]
+            message:
+              type: string
