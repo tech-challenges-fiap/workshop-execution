@@ -1,11 +1,15 @@
 name: Deploy
 
 on:
-  push:
-    branches:
-      - stag
-      - prod
   workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment to deploy"
+        required: true
+        type: choice
+        options:
+          - stag
+          - prod
 
 permissions:
   contents: read
@@ -16,8 +20,25 @@ jobs:
     name: deploy
     runs-on: ubuntu-latest
     environment:
-      name: ${{ github.ref_name == 'stag' && 'staging' || 'production' }}
+      name: ${{ (inputs.environment == 'stag' && 'staging') || (inputs.environment == 'prod' && 'production') || '' }}
     steps:
+      - name: Resolve and validate deploy target
+        run: |
+          set -euo pipefail
+
+          target="${{ inputs.environment }}"
+          if [ "$target" != "stag" ] && [ "$target" != "prod" ]; then
+            echo "::error::Refusing to deploy: '$target' is not 'stag' or 'prod'."
+            exit 1
+          fi
+
+          echo "DEPLOY_TARGET=$target" >> "$GITHUB_ENV"
+          if [ "$target" = "stag" ]; then
+            echo "DEPLOY_NAMESPACE=${{ vars.K8S_NAMESPACE_STAG }}" >> "$GITHUB_ENV"
+          else
+            echo "DEPLOY_NAMESPACE=${{ vars.K8S_NAMESPACE_PROD }}" >> "$GITHUB_ENV"
+          fi
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -57,7 +78,7 @@ jobs:
 
       - name: Apply runtime secret
         env:
-          NAMESPACE: ${{ github.ref_name == 'stag' && vars.K8S_NAMESPACE_STAG || vars.K8S_NAMESPACE_PROD }}
+          NAMESPACE: ${{ env.DEPLOY_NAMESPACE }}
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
           RABBITMQ_URL: ${{ secrets.RABBITMQ_URL }}
         run: |
@@ -83,8 +104,8 @@ jobs:
       - name: Deploy Kubernetes manifests
         env:
           IMAGE_URI: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
-          OVERLAY: ${{ github.ref_name == 'stag' && 'stag' || 'prod' }}
-          NAMESPACE: ${{ github.ref_name == 'stag' && vars.K8S_NAMESPACE_STAG || vars.K8S_NAMESPACE_PROD }}
+          OVERLAY: ${{ env.DEPLOY_TARGET }}
+          NAMESPACE: ${{ env.DEPLOY_NAMESPACE }}
         run: |
           kubectl kustomize "k8s/overlays/$OVERLAY" > /tmp/execution-service.yaml
           sed -i "s#image: execution-service:latest#image: $IMAGE_URI#g" /tmp/execution-service.yaml
@@ -93,7 +114,7 @@ jobs:
 
       - name: Smoke test deployment
         env:
-          NAMESPACE: ${{ github.ref_name == 'stag' && vars.K8S_NAMESPACE_STAG || vars.K8S_NAMESPACE_PROD }}
+          NAMESPACE: ${{ env.DEPLOY_NAMESPACE }}
         run: |
           set -euo pipefail
 

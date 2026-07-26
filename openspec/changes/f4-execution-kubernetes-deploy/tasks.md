@@ -8,11 +8,17 @@
 ## Implementation
 
 - [x] Add `k8s/base/{deployment,service,configmap,hpa,ingress}.yaml` and `k8s/base/kustomization.yaml` for `execution-service`.
-- [x] Add `k8s/overlays/stag/` and `k8s/overlays/prod/` with `runtime-config.yaml` + `ingress-patch.yaml` (and `replicas-patch.yaml` only in `stag`).
+- [x] Add `k8s/overlays/stag/` and `k8s/overlays/prod/` with `runtime-config.yaml` + `ingress-patch.yaml` + `hpa-patch.yaml` (and `replicas-patch.yaml` only in `stag`).
 - [x] Add `.github/workflows/deploy.yml` (build+push to ECR via OIDC, `aws eks update-kubeconfig`, apply overlay, rollout status, smoke test `/health`).
 - [x] Add a `k8s` job to `.github/workflows/pr-validation.yml` that runs `kubectl kustomize` against both overlays.
 - [x] Fix the hardcoded port: add `src/config/http.ts#resolveHttpPort` (HTTP_PORT → PORT → 3000 default), wire it into `src/index.ts`, and update the Dockerfile `EXPOSE` to `8080`.
 - [x] Disable the `Deploy` workflow after it exists on the default branch (`gh workflow disable Deploy`), keeping it dormant like `workshop-app`'s.
+
+## Review follow-up (automated PR review)
+
+- [x] `deploy.yml`: remove the `push` triggers entirely (keep only `workflow_dispatch`) — merging this change is itself a push to `stag`, and `gh workflow disable` cannot run until after that merge, so a `push` trigger would leave a real window for the merge commit itself to start an AWS deploy.
+- [x] `deploy.yml`: require an explicit `environment` choice input for `workflow_dispatch`, validate it in a guard step that fails closed, and export `DEPLOY_TARGET`/`DEPLOY_NAMESPACE` for later steps (replaces the old `github.ref_name == 'stag' && X || Y` fallback, which defaulted to production for anything else).
+- [x] `k8s/base/hpa.yaml`: raise `minReplicas` to `2` (prod's floor); add `k8s/overlays/stag/hpa-patch.yaml` (`minReplicas: 1`) and `k8s/overlays/prod/hpa-patch.yaml` (explicit `minReplicas: 2` pin) so prod cannot silently scale below 2 pods.
 
 ## Verification
 
